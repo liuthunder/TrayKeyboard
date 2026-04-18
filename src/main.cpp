@@ -4,6 +4,7 @@
 #include <UIAutomationClient.h>
 
 #include <array>
+#include <string>
 
 #pragma comment(lib, "gdi32.lib")
 
@@ -11,7 +12,12 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"TrayKeyboardWindowClass";
 constexpr wchar_t kWindowTitle[] = L"TrayKeyboard";
+constexpr wchar_t kStartupMenuText[] = L"\u5F00\u673A\u81EA\u542F\u52A8";
+constexpr wchar_t kStartupUpdateErrorMessage[] = L"\u65E0\u6CD5\u66F4\u65B0\u5F00\u673A\u81EA\u542F\u52A8\u8BBE\u7F6E\u3002";
+constexpr wchar_t kStartupRunKeyPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kStartupRunValueName[] = L"TrayKeyboard";
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
+constexpr UINT kMenuStartupCommand = 2001;
 constexpr UINT kMenuExitCommand = 2000;
 constexpr UINT kIconSize = 16;
 
@@ -49,6 +55,86 @@ UINT gLastHandledTrayId = 0;
 DWORD gLastHandledTick = 0;
 IUIAutomation* gAutomation = nullptr;
 IUIAutomationElement* gFocusedAutomationElement = nullptr;
+bool gLaunchAtStartupEnabled = false;
+
+std::wstring GetStartupCommandValue() {
+    wchar_t executablePath[MAX_PATH]{};
+    const DWORD pathLength = GetModuleFileNameW(nullptr, executablePath, static_cast<DWORD>(std::size(executablePath)));
+    if (pathLength == 0 || pathLength >= std::size(executablePath)) {
+        return {};
+    }
+
+    std::wstring commandValue = L"\"";
+    commandValue += executablePath;
+    commandValue += L"\"";
+    return commandValue;
+}
+
+bool IsLaunchAtStartupEnabled() {
+    wchar_t valueData[1024]{};
+    DWORD valueSize = sizeof(valueData);
+    const LSTATUS status = RegGetValueW(
+        HKEY_CURRENT_USER,
+        kStartupRunKeyPath,
+        kStartupRunValueName,
+        RRF_RT_REG_SZ,
+        nullptr,
+        valueData,
+        &valueSize);
+
+    return status == ERROR_SUCCESS && valueData[0] != L'\0';
+}
+
+bool SetLaunchAtStartupEnabled(bool enabled) {
+    if (enabled) {
+        const std::wstring commandValue = GetStartupCommandValue();
+        if (commandValue.empty()) {
+            return false;
+        }
+
+        HKEY runKey = nullptr;
+        const LSTATUS createStatus = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            kStartupRunKeyPath,
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            nullptr,
+            &runKey,
+            nullptr);
+        if (createStatus != ERROR_SUCCESS) {
+            return false;
+        }
+
+        const LSTATUS setStatus = RegSetValueExW(
+            runKey,
+            kStartupRunValueName,
+            0,
+            REG_SZ,
+            reinterpret_cast<const BYTE*>(commandValue.c_str()),
+            static_cast<DWORD>((commandValue.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(runKey);
+        return setStatus == ERROR_SUCCESS;
+    }
+
+    HKEY runKey = nullptr;
+    const LSTATUS openStatus = RegOpenKeyExW(HKEY_CURRENT_USER, kStartupRunKeyPath, 0, KEY_SET_VALUE, &runKey);
+    if (openStatus == ERROR_FILE_NOT_FOUND) {
+        return true;
+    }
+    if (openStatus != ERROR_SUCCESS) {
+        return false;
+    }
+
+    const LSTATUS deleteStatus = RegDeleteValueW(runKey, kStartupRunValueName);
+    RegCloseKey(runKey);
+    return deleteStatus == ERROR_SUCCESS || deleteStatus == ERROR_FILE_NOT_FOUND;
+}
+
+void RefreshLaunchAtStartupState() {
+    gLaunchAtStartupEnabled = IsLaunchAtStartupEnabled();
+}
 
 bool ShouldSuppressDuplicateTrayAction(UINT trayId) {
     constexpr DWORD kDuplicateWindowMs = 250;
@@ -493,6 +579,11 @@ void ShowContextMenu(HWND windowHandle, POINT cursorPosition) {
         AppendMenuW(menu, MF_STRING, action.id, action.tooltip);
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(
+        menu,
+        MF_STRING | (gLaunchAtStartupEnabled ? MF_CHECKED : MF_UNCHECKED),
+        kMenuStartupCommand,
+        kStartupMenuText);
     AppendMenuW(menu, MF_STRING, kMenuExitCommand, L"Exit");
 
     SetForegroundWindow(windowHandle);
@@ -506,6 +597,17 @@ void ShowContextMenu(HWND windowHandle, POINT cursorPosition) {
         nullptr);
 
     DestroyMenu(menu);
+
+    if (command == kMenuStartupCommand) {
+        const bool targetState = !gLaunchAtStartupEnabled;
+        if (SetLaunchAtStartupEnabled(targetState)) {
+            gLaunchAtStartupEnabled = targetState;
+        } else {
+            RefreshLaunchAtStartupState();
+            MessageBoxW(windowHandle, kStartupUpdateErrorMessage, kWindowTitle, MB_OK | MB_ICONERROR);
+        }
+        return;
+    }
 
     if (command == kMenuExitCommand) {
         DestroyWindow(windowHandle);
@@ -526,6 +628,7 @@ LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam,
 
     switch (message) {
     case WM_CREATE:
+        RefreshLaunchAtStartupState();
         CreateTrayIcons();
         InstallWindowTrackingHooks();
         AddTrayIcons(windowHandle);
