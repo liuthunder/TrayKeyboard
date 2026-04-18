@@ -45,9 +45,22 @@ HWINEVENTHOOK gForegroundHook = nullptr;
 HWINEVENTHOOK gFocusHook = nullptr;
 std::array<HICON, kTrayActions.size()> gTrayIcons{};
 InputTarget gLastInputTarget;
-UINT gHandledLeftClickTrayId = 0;
+UINT gLastHandledTrayId = 0;
+DWORD gLastHandledTick = 0;
 IUIAutomation* gAutomation = nullptr;
 IUIAutomationElement* gFocusedAutomationElement = nullptr;
+
+bool ShouldSuppressDuplicateTrayAction(UINT trayId) {
+    constexpr DWORD kDuplicateWindowMs = 250;
+    const DWORD currentTick = GetTickCount();
+    if (gLastHandledTrayId == trayId && currentTick - gLastHandledTick <= kDuplicateWindowMs) {
+        return true;
+    }
+
+    gLastHandledTrayId = trayId;
+    gLastHandledTick = currentTick;
+    return false;
+}
 
 template <typename T>
 void ReleaseAndNull(T*& pointer) {
@@ -522,17 +535,18 @@ LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam,
         const UINT trayId = static_cast<UINT>(wParam);
         switch (static_cast<UINT>(lParam)) {
         case WM_LBUTTONDOWN:
+            if (ShouldSuppressDuplicateTrayAction(trayId)) {
+                return 0;
+            }
             if (const TrayAction* action = FindTrayAction(trayId)) {
                 const InputTarget targetSnapshot = gLastInputTarget;
                 ExecuteTrayAction(action->virtualKey, targetSnapshot);
-                gHandledLeftClickTrayId = trayId;
             }
             return 0;
 
         case WM_LBUTTONUP:
         case NIN_SELECT:
-            if (gHandledLeftClickTrayId == trayId) {
-                gHandledLeftClickTrayId = 0;
+            if (ShouldSuppressDuplicateTrayAction(trayId)) {
                 return 0;
             }
             if (const TrayAction* action = FindTrayAction(trayId)) {
