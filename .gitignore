@@ -12,3 +12,4 @@
 *.pdb
 *.obj
 *.log
+/test/automation-result.txt
