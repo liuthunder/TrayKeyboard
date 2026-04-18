@@ -13,3 +13,4 @@
 *.obj
 *.log
 /test/automation-result.txt
+test/test.txt
