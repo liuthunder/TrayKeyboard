@@ -1,5 +1,7 @@
 #include <windows.h>
+#include <ole2.h>
 #include <shellapi.h>
+#include <UIAutomationClient.h>
 
 #include <array>
 
@@ -12,25 +14,30 @@ constexpr wchar_t kWindowTitle[] = L"TrayKeyboard";
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kMenuExitCommand = 2000;
 constexpr UINT kIconSize = 16;
-constexpr COLORREF kIconBackground = RGB(32, 32, 32);
-constexpr COLORREF kIconForeground = RGB(245, 245, 245);
 
 struct InputTarget {
     HWND topLevelWindow = nullptr;
     HWND focusWindow = nullptr;
 };
 
+enum class ActionIconKind {
+    Enter,
+    Backspace,
+    Delete,
+};
+
 struct TrayAction {
     UINT id;
     const wchar_t* tooltip;
     UINT virtualKey;
-    wchar_t glyph;
+    ActionIconKind iconKind;
+    COLORREF accentColor;
 };
 
 constexpr std::array<TrayAction, 3> kTrayActions{{
-    {1001, L"TrayKeyboard: Enter", VK_RETURN, L'\u23CE'},
-    {1002, L"TrayKeyboard: Backspace", VK_BACK, L'\u232B'},
-    {1003, L"TrayKeyboard: Delete", VK_DELETE, L'\u2326'},
+    {1001, L"TrayKeyboard: Enter", VK_RETURN, ActionIconKind::Enter, RGB(14, 165, 233)},
+    {1002, L"TrayKeyboard: Backspace", VK_BACK, ActionIconKind::Backspace, RGB(245, 158, 11)},
+    {1003, L"TrayKeyboard: Delete", VK_DELETE, ActionIconKind::Delete, RGB(239, 68, 68)},
 }};
 
 UINT gTaskbarCreatedMessage = 0;
@@ -38,6 +45,17 @@ HWINEVENTHOOK gForegroundHook = nullptr;
 HWINEVENTHOOK gFocusHook = nullptr;
 std::array<HICON, kTrayActions.size()> gTrayIcons{};
 InputTarget gLastInputTarget;
+UINT gHandledLeftClickTrayId = 0;
+IUIAutomation* gAutomation = nullptr;
+IUIAutomationElement* gFocusedAutomationElement = nullptr;
+
+template <typename T>
+void ReleaseAndNull(T*& pointer) {
+    if (pointer != nullptr) {
+        pointer->Release();
+        pointer = nullptr;
+    }
+}
 
 bool IsValidTargetWindow(HWND windowHandle) {
     return windowHandle != nullptr && IsWindow(windowHandle) != FALSE;
@@ -74,6 +92,34 @@ bool IsShellTrayWindow(HWND windowHandle) {
            lstrcmpW(className, L"NotifyIconOverflowWindow") == 0;
 }
 
+bool IsChromiumWindow(HWND windowHandle) {
+    if (!IsValidTargetWindow(windowHandle)) {
+        return false;
+    }
+
+    HWND rootWindow = GetAncestor(windowHandle, GA_ROOT);
+    if (rootWindow == nullptr) {
+        rootWindow = windowHandle;
+    }
+
+    wchar_t className[64]{};
+    GetClassNameW(rootWindow, className, static_cast<int>(std::size(className)));
+    return lstrcmpW(className, L"Chrome_WidgetWin_1") == 0;
+}
+
+void CaptureAutomationFocus() {
+    ReleaseAndNull(gFocusedAutomationElement);
+
+    if (gAutomation == nullptr) {
+        return;
+    }
+
+    IUIAutomationElement* focusedElement = nullptr;
+    if (SUCCEEDED(gAutomation->GetFocusedElement(&focusedElement)) && focusedElement != nullptr) {
+        gFocusedAutomationElement = focusedElement;
+    }
+}
+
 void UpdateInputTarget(HWND windowHandle) {
     if (!IsValidTargetWindow(windowHandle) || IsTrayOwnedWindow(windowHandle) || IsShellTrayWindow(windowHandle)) {
         return;
@@ -96,6 +142,12 @@ void UpdateInputTarget(HWND windowHandle) {
 
     gLastInputTarget.topLevelWindow = foregroundWindow;
     gLastInputTarget.focusWindow = focusWindow;
+
+    if (IsChromiumWindow(foregroundWindow)) {
+        CaptureAutomationFocus();
+    } else {
+        ReleaseAndNull(gFocusedAutomationElement);
+    }
 }
 
 void CALLBACK HandleWinEvent(
@@ -145,71 +197,76 @@ void RemoveWindowTrackingHooks() {
     }
 }
 
-void RestoreInputTarget() {
-    if (!IsValidTargetWindow(gLastInputTarget.topLevelWindow)) {
+void RestoreInputTarget(const InputTarget& inputTarget) {
+    if (!IsValidTargetWindow(inputTarget.topLevelWindow)) {
         return;
     }
 
-    if (IsIconic(gLastInputTarget.topLevelWindow) != FALSE) {
-        ShowWindow(gLastInputTarget.topLevelWindow, SW_RESTORE);
+    if (IsIconic(inputTarget.topLevelWindow) != FALSE) {
+        ShowWindow(inputTarget.topLevelWindow, SW_RESTORE);
     }
 
     DWORD currentThreadId = GetCurrentThreadId();
-    DWORD targetThreadId = GetWindowThreadProcessId(gLastInputTarget.topLevelWindow, nullptr);
+    HWND foregroundWindow = GetForegroundWindow();
+    DWORD foregroundThreadId = GetWindowThreadProcessId(foregroundWindow, nullptr);
+    DWORD targetThreadId = GetWindowThreadProcessId(inputTarget.topLevelWindow, nullptr);
     const bool attachInput = targetThreadId != 0 && targetThreadId != currentThreadId;
+    const bool attachForeground = foregroundThreadId != 0 && foregroundThreadId != currentThreadId && foregroundThreadId != targetThreadId;
+
+    if (attachForeground) {
+        AttachThreadInput(currentThreadId, foregroundThreadId, TRUE);
+    }
 
     if (attachInput) {
         AttachThreadInput(currentThreadId, targetThreadId, TRUE);
     }
 
-    BringWindowToTop(gLastInputTarget.topLevelWindow);
-    SetForegroundWindow(gLastInputTarget.topLevelWindow);
-    SetActiveWindow(gLastInputTarget.topLevelWindow);
+    SetWindowPos(
+        inputTarget.topLevelWindow,
+        HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(
+        inputTarget.topLevelWindow,
+        HWND_NOTOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    BringWindowToTop(inputTarget.topLevelWindow);
+    SetForegroundWindow(inputTarget.topLevelWindow);
+    SetActiveWindow(inputTarget.topLevelWindow);
 
-    if (IsValidTargetWindow(gLastInputTarget.focusWindow)) {
-        SetFocus(gLastInputTarget.focusWindow);
+    if (IsValidTargetWindow(inputTarget.focusWindow)) {
+        SetFocus(inputTarget.focusWindow);
+    }
+
+    if (IsChromiumWindow(inputTarget.topLevelWindow) && gFocusedAutomationElement != nullptr) {
+        gFocusedAutomationElement->SetFocus();
     }
 
     if (attachInput) {
         AttachThreadInput(currentThreadId, targetThreadId, FALSE);
     }
-}
 
-bool SendKeyMessages(HWND windowHandle, UINT virtualKey) {
-    if (!IsValidTargetWindow(windowHandle)) {
-        return false;
+    if (attachForeground) {
+        AttachThreadInput(currentThreadId, foregroundThreadId, FALSE);
     }
-
-    const UINT scanCode = MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC);
-    LPARAM keyDownFlags = 1 | (static_cast<LPARAM>(scanCode) << 16);
-    LPARAM keyUpFlags = keyDownFlags | (1LL << 30) | (1LL << 31);
-
-    if (virtualKey == VK_DELETE) {
-        keyDownFlags |= 1LL << 24;
-        keyUpFlags |= 1LL << 24;
-    }
-
-    DWORD_PTR ignoredResult = 0;
-    if (SendMessageTimeoutW(windowHandle, WM_KEYDOWN, virtualKey, keyDownFlags, SMTO_ABORTIFHUNG, 100, &ignoredResult) == 0) {
-        return false;
-    }
-
-    if (virtualKey == VK_RETURN || virtualKey == VK_BACK) {
-        const WPARAM character = virtualKey == VK_RETURN ? L'\r' : L'\b';
-        SendMessageTimeoutW(windowHandle, WM_CHAR, character, 1, SMTO_ABORTIFHUNG, 100, &ignoredResult);
-    }
-
-    SendMessageTimeoutW(windowHandle, WM_KEYUP, virtualKey, keyUpFlags, SMTO_ABORTIFHUNG, 100, &ignoredResult);
-    return true;
 }
 
 void SendVirtualKey(UINT virtualKey) {
     INPUT inputs[2]{};
     inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = static_cast<WORD>(virtualKey);
+    inputs[0].ki.wVk = 0;
+    inputs[0].ki.wScan = static_cast<WORD>(MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC));
+    inputs[0].ki.dwFlags = KEYEVENTF_SCANCODE;
 
     inputs[1] = inputs[0];
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs[1].ki.dwFlags |= KEYEVENTF_KEYUP;
 
     if (virtualKey == VK_DELETE) {
         inputs[0].ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
@@ -219,21 +276,80 @@ void SendVirtualKey(UINT virtualKey) {
     SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT));
 }
 
-void ExecuteTrayAction(UINT virtualKey) {
-    if (SendKeyMessages(gLastInputTarget.focusWindow, virtualKey)) {
-        return;
-    }
-
-    if (gLastInputTarget.focusWindow != gLastInputTarget.topLevelWindow &&
-        SendKeyMessages(gLastInputTarget.topLevelWindow, virtualKey)) {
-        return;
-    }
-
-    RestoreInputTarget();
+void ExecuteTrayAction(UINT virtualKey, const InputTarget& inputTarget) {
+    RestoreInputTarget(inputTarget);
+    Sleep(20);
     SendVirtualKey(virtualKey);
 }
 
-HICON CreateGlyphIcon(wchar_t glyph, COLORREF backgroundColor, COLORREF foregroundColor) {
+void FillRoundedTile(HDC deviceContext, const RECT& bounds, COLORREF accentColor) {
+    HBRUSH backgroundBrush = CreateSolidBrush(accentColor);
+    HPEN borderPen = CreatePen(PS_SOLID, 1, accentColor);
+    HGDIOBJ previousBrush = SelectObject(deviceContext, backgroundBrush);
+    HGDIOBJ previousPen = SelectObject(deviceContext, borderPen);
+    RoundRect(deviceContext, bounds.left, bounds.top, bounds.right, bounds.bottom, 5, 5);
+    SelectObject(deviceContext, previousBrush);
+    SelectObject(deviceContext, previousPen);
+    DeleteObject(backgroundBrush);
+    DeleteObject(borderPen);
+}
+
+void DrawEnterGlyph(HDC deviceContext) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HGDIOBJ previousPen = SelectObject(deviceContext, pen);
+    MoveToEx(deviceContext, 11, 4, nullptr);
+    LineTo(deviceContext, 11, 9);
+    LineTo(deviceContext, 5, 9);
+    MoveToEx(deviceContext, 5, 9, nullptr);
+    LineTo(deviceContext, 7, 7);
+    MoveToEx(deviceContext, 5, 9, nullptr);
+    LineTo(deviceContext, 7, 11);
+    SelectObject(deviceContext, previousPen);
+    DeleteObject(pen);
+}
+
+void DrawBackspaceGlyph(HDC deviceContext) {
+    POINT points[] = {{5, 4}, {12, 4}, {13, 5}, {13, 11}, {12, 12}, {5, 12}, {2, 8}};
+    HBRUSH bodyBrush = CreateSolidBrush(RGB(255, 255, 255));
+    HPEN bodyPen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+    HGDIOBJ previousBrush = SelectObject(deviceContext, bodyBrush);
+    HGDIOBJ previousPen = SelectObject(deviceContext, bodyPen);
+    Polygon(deviceContext, points, static_cast<int>(std::size(points)));
+    SelectObject(deviceContext, previousBrush);
+    SelectObject(deviceContext, previousPen);
+    DeleteObject(bodyBrush);
+    DeleteObject(bodyPen);
+
+    HPEN crossPen = CreatePen(PS_SOLID, 2, RGB(92, 62, 0));
+    previousPen = SelectObject(deviceContext, crossPen);
+    MoveToEx(deviceContext, 7, 6, nullptr);
+    LineTo(deviceContext, 11, 10);
+    MoveToEx(deviceContext, 11, 6, nullptr);
+    LineTo(deviceContext, 7, 10);
+    SelectObject(deviceContext, previousPen);
+    DeleteObject(crossPen);
+}
+
+void DrawDeleteGlyph(HDC deviceContext) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HBRUSH brush = CreateSolidBrush(RGB(255, 255, 255));
+    HGDIOBJ previousPen = SelectObject(deviceContext, pen);
+    HGDIOBJ previousBrush = SelectObject(deviceContext, brush);
+
+    Rectangle(deviceContext, 5, 6, 11, 12);
+    Rectangle(deviceContext, 4, 4, 12, 6);
+    MoveToEx(deviceContext, 6, 4, nullptr);
+    LineTo(deviceContext, 7, 3);
+    LineTo(deviceContext, 9, 3);
+    LineTo(deviceContext, 10, 4);
+
+    SelectObject(deviceContext, previousPen);
+    SelectObject(deviceContext, previousBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+HICON CreateActionIcon(ActionIconKind iconKind, COLORREF accentColor) {
     HDC screenDc = GetDC(nullptr);
     if (screenDc == nullptr) {
         return nullptr;
@@ -247,37 +363,29 @@ HICON CreateGlyphIcon(wchar_t glyph, COLORREF backgroundColor, COLORREF foregrou
     HGDIOBJ previousMaskBitmap = maskBitmap != nullptr ? SelectObject(maskDc, maskBitmap) : nullptr;
 
     RECT iconBounds{0, 0, static_cast<LONG>(kIconSize), static_cast<LONG>(kIconSize)};
-    HBRUSH backgroundBrush = CreateSolidBrush(backgroundColor);
-    FillRect(colorDc, &iconBounds, backgroundBrush);
-    DeleteObject(backgroundBrush);
+    FillRect(colorDc, &iconBounds, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
     PatBlt(maskDc, 0, 0, kIconSize, kIconSize, WHITENESS);
 
     SetBkMode(colorDc, TRANSPARENT);
-    SetTextColor(colorDc, foregroundColor);
+    FillRoundedTile(colorDc, iconBounds, accentColor);
 
-    LOGFONTW font{};
-    font.lfHeight = -14;
-    font.lfWeight = FW_BOLD;
-    font.lfQuality = CLEARTYPE_QUALITY;
-    lstrcpynW(font.lfFaceName, L"Segoe UI Symbol", LF_FACESIZE);
-    HFONT fontHandle = CreateFontIndirectW(&font);
-    HGDIOBJ previousFont = fontHandle != nullptr ? SelectObject(colorDc, fontHandle) : nullptr;
-
-    wchar_t glyphText[2]{glyph, L'\0'};
-    DrawTextW(colorDc, glyphText, 1, &iconBounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    switch (iconKind) {
+    case ActionIconKind::Enter:
+        DrawEnterGlyph(colorDc);
+        break;
+    case ActionIconKind::Backspace:
+        DrawBackspaceGlyph(colorDc);
+        break;
+    case ActionIconKind::Delete:
+        DrawDeleteGlyph(colorDc);
+        break;
+    }
 
     ICONINFO iconInfo{};
     iconInfo.fIcon = TRUE;
     iconInfo.hbmColor = colorBitmap;
     iconInfo.hbmMask = maskBitmap;
     HICON iconHandle = CreateIconIndirect(&iconInfo);
-
-    if (previousFont != nullptr) {
-        SelectObject(colorDc, previousFont);
-    }
-    if (fontHandle != nullptr) {
-        DeleteObject(fontHandle);
-    }
 
     if (previousColorBitmap != nullptr) {
         SelectObject(colorDc, previousColorBitmap);
@@ -307,7 +415,7 @@ void CreateTrayIcons() {
         if (gTrayIcons[index] != nullptr) {
             DestroyIcon(gTrayIcons[index]);
         }
-        gTrayIcons[index] = CreateGlyphIcon(kTrayActions[index].glyph, kIconBackground, kIconForeground);
+        gTrayIcons[index] = CreateActionIcon(kTrayActions[index].iconKind, kTrayActions[index].accentColor);
     }
 }
 
@@ -392,7 +500,8 @@ void ShowContextMenu(HWND windowHandle, POINT cursorPosition) {
     }
 
     if (const TrayAction* action = FindTrayAction(command)) {
-        ExecuteTrayAction(action->virtualKey);
+        const InputTarget targetSnapshot = gLastInputTarget;
+        ExecuteTrayAction(action->virtualKey, targetSnapshot);
     }
 }
 
@@ -412,10 +521,23 @@ LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam,
     case kTrayCallbackMessage: {
         const UINT trayId = static_cast<UINT>(wParam);
         switch (static_cast<UINT>(lParam)) {
+        case WM_LBUTTONDOWN:
+            if (const TrayAction* action = FindTrayAction(trayId)) {
+                const InputTarget targetSnapshot = gLastInputTarget;
+                ExecuteTrayAction(action->virtualKey, targetSnapshot);
+                gHandledLeftClickTrayId = trayId;
+            }
+            return 0;
+
         case WM_LBUTTONUP:
         case NIN_SELECT:
+            if (gHandledLeftClickTrayId == trayId) {
+                gHandledLeftClickTrayId = 0;
+                return 0;
+            }
             if (const TrayAction* action = FindTrayAction(trayId)) {
-                ExecuteTrayAction(action->virtualKey);
+                const InputTarget targetSnapshot = gLastInputTarget;
+                ExecuteTrayAction(action->virtualKey, targetSnapshot);
             }
             return 0;
 
@@ -436,6 +558,8 @@ LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam,
         RemoveTrayIcons(windowHandle);
         RemoveWindowTrackingHooks();
         DestroyTrayIcons();
+        ReleaseAndNull(gFocusedAutomationElement);
+        ReleaseAndNull(gAutomation);
         PostQuitMessage(0);
         return 0;
 
@@ -447,6 +571,9 @@ LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam,
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instanceHandle, HINSTANCE, PWSTR, int) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&gAutomation));
+
     gTaskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
 
     WNDCLASSEXW windowClass{};
@@ -483,6 +610,10 @@ int WINAPI wWinMain(HINSTANCE instanceHandle, HINSTANCE, PWSTR, int) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+
+    ReleaseAndNull(gFocusedAutomationElement);
+    ReleaseAndNull(gAutomation);
+    CoUninitialize();
 
     return static_cast<int>(message.wParam);
 }

@@ -65,16 +65,18 @@ $invokeTimer.Add_Tick({
         return
     }
 
+    [NativeMethods]::SendMessage($trayWindow, 0x8001, [IntPtr]1002, [IntPtr]0x0201) | Out-Null
     [NativeMethods]::SendMessage($trayWindow, 0x8001, [IntPtr]1002, [IntPtr]0x0202) | Out-Null
 })
 
 $assertTimer.Add_Tick({
     $assertTimer.Stop()
     $actual = $textBox.Text.Replace("`r", '\\r').Replace("`n", '\\n')
-    if ($actual -eq 'ab') {
-        Set-Content -Path $resultPath -Value ('PASS:' + $actual) -Encoding ASCII
+    $focusState = $textBox.Focused
+    if ($actual -eq 'ab' -and $focusState) {
+        Set-Content -Path $resultPath -Value ('PASS:' + $actual + ':focus=' + $focusState) -Encoding ASCII
     } else {
-        Set-Content -Path $resultPath -Value ('FAIL:' + $actual) -Encoding ASCII
+        Set-Content -Path $resultPath -Value ('FAIL:' + $actual + ':focus=' + $focusState) -Encoding ASCII
     }
     $form.Close()
 })

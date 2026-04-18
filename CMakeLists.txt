@@ -15,4 +15,4 @@ target_compile_definitions(TrayKeyboard PRIVATE
     NOMINMAX
 )
 
-target_link_libraries(TrayKeyboard PRIVATE shell32 user32)
+target_link_libraries(TrayKeyboard PRIVATE shell32 user32 uiautomationcore)
