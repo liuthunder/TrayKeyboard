@@ -15,3 +15,4 @@
 /test/automation-result.txt
 test/test.txt
 test/automation_focus_regression.ps1
+dist/TrayKeyboard-win64.zip
