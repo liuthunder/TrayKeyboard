@@ -1,60 +1,48 @@
-# TrayKeyBoard
-TrayKeyBoard，系统图标键盘，是一个windows效率程序。当他启动时，会显示几个图标，点击图标，相当于按下键盘上的按键。
-- 回车键
-- 退格键
-- 删除键
+# TrayKeyboard
 
-## 技术栈
-- C++，vs2022，cmake，cmake第三方库方案，git
+TrayKeyboard 是一个 Windows 托盘按键工具。程序启动后会在系统托盘里显示三个图标，点击图标即可向当前输入目标发送按键。
 
-## 当前实现
-- Win32 隐藏窗口 + 系统托盘图标
-- 三个托盘图标分别映射回车、退格、删除
-- 左键点击图标发送对应按键
-- 右键任意图标弹出菜单，可重复发送按键或退出程序
-- 托盘图标改为本地绘制的符号图标：⏎、⌫、⌦
-- 通过系统前台/焦点跟踪记住最近真实输入目标，避免托盘点击抢焦点后按键失效
+支持的按键：
+- 回车
+- 退格
+- 删除
 
-## 回归验证
-```powershell
-powershell -ExecutionPolicy Bypass -File .\test\automation_focus_regression.ps1
-```
+## 适用场景
 
-脚本会自动创建一个文本框窗口，模拟任务栏抢走焦点，再触发托盘 Backspace 动作，期望输出 PASS:ab。
+- 触屏设备上补充常用编辑按键
+- 鼠标操作为主时快速输入 Enter、Backspace、Delete
+- 需要常驻后台的轻量辅助工具
 
-## 构建与运行
+## 使用方法
+
+1. 启动 TrayKeyboard。
+2. 程序会最小化到系统托盘，不显示主窗口。
+3. 左键点击托盘图标即可发送对应按键。
+4. 右键点击任意托盘图标可以打开菜单，执行重复发送或退出程序。
+
+## 运行方式
+
+如果你下载的是发布版：
+
+1. 下载发布页中的 TrayKeyboard-win64.zip。
+2. 解压后运行 TrayKeyboard.exe。
+
+如果你需要自行编译：
+
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022"
 cmake --build build --config Release
 .\build\Release\TrayKeyboard.exe
 ```
 
-## 可替代技术路线
+## 使用说明
 
-当前主线方案是：点击托盘图标后，恢复最近真实输入目标，再通过 SendInput 发送键盘扫描码。
+- TrayKeyboard 会尽量把按键发回最近的真实输入目标。
+- 托盘图标分别代表 Enter、Backspace、Delete。
+- 退出程序请使用托盘右键菜单中的退出项。
 
-还可以考虑以下路线：
+## 开发与设计文档
 
-1. 低级键盘钩子 + 托盘按钮转虚拟热键
-	- 思路：程序不直接把按键发送给目标窗口，而是注册一组内部热键或命令，再由全局键盘注入层统一下发。
-	- 优点：行为更接近真实物理键盘，目标应用兼容性通常更高。
-	- 缺点：实现复杂度更高，需要更严格处理注入来源和去重。
-
-2. UI Automation / Accessibility 定位可编辑控件后执行控件级动作
-	- 思路：优先找到目标编辑控件，通过自动化接口恢复控件焦点，再决定是否发送键盘输入。
-	- 优点：对复杂应用的内部焦点恢复更强，理论上更适合 VS Code / Electron。
-	- 缺点：实现和调试成本高，跨应用兼容性波动较大。
-
-3. 剪贴板命令路线
-	- 思路：对 Enter、Backspace、Delete 这种少量动作，分别映射到目标控件的编辑命令或消息，而不是依赖统一键盘注入。
-	- 优点：在某些特定控件中更稳定。
-	- 缺点：通用性最差，不适合作为主线方案。
-
-## 实验分支
-
-已创建独立 worktree 用于替代方案实验：
-
-- `D:/TrayKeyboard-worktree-rawinput`
-- git 分支：`experiment/rawinput-fallback`
+技术实现、设计取舍、回归验证和替代方案已经移到 [docs/设计文档.md](docs/设计文档.md)。
 
 
