@@ -1,11 +1,13 @@
 # TrayKeyboard
 
-TrayKeyboard 是一个 Windows 托盘按键工具。程序启动后会在系统托盘里显示三个图标，点击图标即可向当前输入目标发送按键。
+TrayKeyboard 是一个 Windows 托盘按键工具。程序启动后会在系统托盘里显示五个图标，点击图标即可向当前输入目标发送按键。
 
 支持的按键：
 - 回车
 - 退格
 - 删除
+- 复制（Ctrl+C）
+- 粘贴（Ctrl+V）
 
 ## 适用场景
 
@@ -38,7 +40,7 @@ cmake --build build --config Release
 ## 使用说明
 
 - TrayKeyboard 会尽量把按键发回最近的真实输入目标。
-- 托盘图标分别代表 Enter、Backspace、Delete。
+- 托盘图标分别代表 Enter、Backspace、Delete、Copy（Ctrl+C）、Paste（Ctrl+V）。
 - 退出程序请使用托盘右键菜单中的退出项。
 
 ## 开发与设计文档

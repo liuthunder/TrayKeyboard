@@ -30,20 +30,25 @@ enum class ActionIconKind {
     Enter,
     Backspace,
     Delete,
+    Copy,
+    Paste,
 };
 
 struct TrayAction {
     UINT id;
     const wchar_t* tooltip;
     UINT virtualKey;
+    UINT modifierKey;
     ActionIconKind iconKind;
     COLORREF accentColor;
 };
 
-constexpr std::array<TrayAction, 3> kTrayActions{{
-    {1001, L"TrayKeyboard: Enter", VK_RETURN, ActionIconKind::Enter, RGB(14, 165, 233)},
-    {1002, L"TrayKeyboard: Backspace", VK_BACK, ActionIconKind::Backspace, RGB(245, 158, 11)},
-    {1003, L"TrayKeyboard: Delete", VK_DELETE, ActionIconKind::Delete, RGB(239, 68, 68)},
+constexpr std::array<TrayAction, 5> kTrayActions{{
+    {1001, L"TrayKeyboard: Enter", VK_RETURN, 0, ActionIconKind::Enter, RGB(14, 165, 233)},
+    {1002, L"TrayKeyboard: Backspace", VK_BACK, 0, ActionIconKind::Backspace, RGB(245, 158, 11)},
+    {1003, L"TrayKeyboard: Delete", VK_DELETE, 0, ActionIconKind::Delete, RGB(239, 68, 68)},
+    {1004, L"TrayKeyboard: Copy", 'C', VK_CONTROL, ActionIconKind::Copy, RGB(16, 185, 129)},
+    {1005, L"TrayKeyboard: Paste", 'V', VK_CONTROL, ActionIconKind::Paste, RGB(139, 92, 246)},
 }};
 
 UINT gTaskbarCreatedMessage = 0;
@@ -357,7 +362,32 @@ void RestoreInputTarget(const InputTarget& inputTarget) {
     }
 }
 
-void SendVirtualKey(UINT virtualKey) {
+void SendKeySequence(UINT virtualKey, UINT modifierKey) {
+    if (modifierKey != 0) {
+        const WORD modifierScan = static_cast<WORD>(MapVirtualKeyW(modifierKey, MAPVK_VK_TO_VSC));
+        const WORD keyScan = static_cast<WORD>(MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC));
+
+        INPUT inputs[4]{};
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].ki.wScan = modifierScan;
+        inputs[0].ki.dwFlags = KEYEVENTF_SCANCODE;
+
+        inputs[1].type = INPUT_KEYBOARD;
+        inputs[1].ki.wScan = keyScan;
+        inputs[1].ki.dwFlags = KEYEVENTF_SCANCODE;
+
+        inputs[2].type = INPUT_KEYBOARD;
+        inputs[2].ki.wScan = keyScan;
+        inputs[2].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+
+        inputs[3].type = INPUT_KEYBOARD;
+        inputs[3].ki.wScan = modifierScan;
+        inputs[3].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+
+        SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT));
+        return;
+    }
+
     INPUT inputs[2]{};
     inputs[0].type = INPUT_KEYBOARD;
     inputs[0].ki.wVk = 0;
@@ -375,10 +405,10 @@ void SendVirtualKey(UINT virtualKey) {
     SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT));
 }
 
-void ExecuteTrayAction(UINT virtualKey, const InputTarget& inputTarget) {
+void ExecuteTrayAction(UINT virtualKey, UINT modifierKey, const InputTarget& inputTarget) {
     RestoreInputTarget(inputTarget);
     Sleep(20);
-    SendVirtualKey(virtualKey);
+    SendKeySequence(virtualKey, modifierKey);
 }
 
 void FillRoundedTile(HDC deviceContext, const RECT& bounds, COLORREF accentColor) {
@@ -448,6 +478,28 @@ void DrawDeleteGlyph(HDC deviceContext) {
     DeleteObject(brush);
 }
 
+void DrawCopyGlyph(HDC deviceContext) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HGDIOBJ previousPen = SelectObject(deviceContext, pen);
+    HGDIOBJ previousBrush = SelectObject(deviceContext, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(deviceContext, 3, 4, 10, 11);
+    Rectangle(deviceContext, 6, 7, 13, 13);
+    SelectObject(deviceContext, previousBrush);
+    SelectObject(deviceContext, previousPen);
+    DeleteObject(pen);
+}
+
+void DrawPasteGlyph(HDC deviceContext) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HGDIOBJ previousPen = SelectObject(deviceContext, pen);
+    HGDIOBJ previousBrush = SelectObject(deviceContext, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(deviceContext, 4, 5, 12, 12);
+    Rectangle(deviceContext, 6, 3, 10, 6);
+    SelectObject(deviceContext, previousBrush);
+    SelectObject(deviceContext, previousPen);
+    DeleteObject(pen);
+}
+
 HICON CreateActionIcon(ActionIconKind iconKind, COLORREF accentColor) {
     HDC screenDc = GetDC(nullptr);
     if (screenDc == nullptr) {
@@ -477,6 +529,12 @@ HICON CreateActionIcon(ActionIconKind iconKind, COLORREF accentColor) {
         break;
     case ActionIconKind::Delete:
         DrawDeleteGlyph(colorDc);
+        break;
+    case ActionIconKind::Copy:
+        DrawCopyGlyph(colorDc);
+        break;
+    case ActionIconKind::Paste:
+        DrawPasteGlyph(colorDc);
         break;
     }
 
@@ -616,7 +674,7 @@ void ShowContextMenu(HWND windowHandle, POINT cursorPosition) {
 
     if (const TrayAction* action = FindTrayAction(command)) {
         const InputTarget targetSnapshot = gLastInputTarget;
-        ExecuteTrayAction(action->virtualKey, targetSnapshot);
+        ExecuteTrayAction(action->virtualKey, action->modifierKey, targetSnapshot);
     }
 }
 
@@ -643,7 +701,7 @@ LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam,
             }
             if (const TrayAction* action = FindTrayAction(trayId)) {
                 const InputTarget targetSnapshot = gLastInputTarget;
-                ExecuteTrayAction(action->virtualKey, targetSnapshot);
+                ExecuteTrayAction(action->virtualKey, action->modifierKey, targetSnapshot);
             }
             return 0;
 
@@ -654,7 +712,7 @@ LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam,
             }
             if (const TrayAction* action = FindTrayAction(trayId)) {
                 const InputTarget targetSnapshot = gLastInputTarget;
-                ExecuteTrayAction(action->virtualKey, targetSnapshot);
+                ExecuteTrayAction(action->virtualKey, action->modifierKey, targetSnapshot);
             }
             return 0;
 
