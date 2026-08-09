@@ -478,26 +478,26 @@ void DrawDeleteGlyph(HDC deviceContext) {
     DeleteObject(brush);
 }
 
+void DrawLetterGlyph(HDC deviceContext, wchar_t letter) {
+    HFONT font = CreateFontW(
+        12, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HGDIOBJ previousFont = SelectObject(deviceContext, font);
+    SetTextColor(deviceContext, RGB(255, 255, 255));
+    SetBkMode(deviceContext, TRANSPARENT);
+    RECT bounds{0, 0, static_cast<LONG>(kIconSize), static_cast<LONG>(kIconSize)};
+    DrawTextW(deviceContext, &letter, 1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(deviceContext, previousFont);
+    DeleteObject(font);
+}
+
 void DrawCopyGlyph(HDC deviceContext) {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-    HGDIOBJ previousPen = SelectObject(deviceContext, pen);
-    HGDIOBJ previousBrush = SelectObject(deviceContext, GetStockObject(HOLLOW_BRUSH));
-    Rectangle(deviceContext, 3, 4, 10, 11);
-    Rectangle(deviceContext, 6, 7, 13, 13);
-    SelectObject(deviceContext, previousBrush);
-    SelectObject(deviceContext, previousPen);
-    DeleteObject(pen);
+    DrawLetterGlyph(deviceContext, L'C');
 }
 
 void DrawPasteGlyph(HDC deviceContext) {
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-    HGDIOBJ previousPen = SelectObject(deviceContext, pen);
-    HGDIOBJ previousBrush = SelectObject(deviceContext, GetStockObject(HOLLOW_BRUSH));
-    Rectangle(deviceContext, 4, 5, 12, 12);
-    Rectangle(deviceContext, 6, 3, 10, 6);
-    SelectObject(deviceContext, previousBrush);
-    SelectObject(deviceContext, previousPen);
-    DeleteObject(pen);
+    DrawLetterGlyph(deviceContext, L'V');
 }
 
 HICON CreateActionIcon(ActionIconKind iconKind, COLORREF accentColor) {
